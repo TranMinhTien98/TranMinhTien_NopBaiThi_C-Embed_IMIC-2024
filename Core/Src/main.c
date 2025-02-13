@@ -17,7 +17,6 @@
   */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
-#include <RTC_DS3231.h>
 #include "main.h"
 #include "cmsis_os.h"
 
@@ -34,7 +33,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define DS3231_ADDR 0x68<<1
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -47,13 +46,25 @@ I2C_HandleTypeDef hi2c1;
 
 UART_HandleTypeDef huart1;
 
-osThreadId Task1Handle;
 osThreadId Task2Handle;
+osThreadId Task1Handle;
 osThreadId Task3Handle;
 osMessageQId myQueue01Handle;
-
 /* USER CODE BEGIN PV */
-extern DS3231_Typedef DS3231_Timer;
+uint8_t u8_revBuffer[7];
+uint8_t u8_tranBuffer[7];
+char uartBuf[128];
+uint8_t uartRxData;
+typedef struct{
+	uint8_t hour;
+	uint8_t min;
+	uint8_t sec;
+	uint8_t date;
+	uint8_t day;
+	uint8_t month;
+	uint8_t year;
+}DS3231_typedef;
+DS3231_typedef DS3231_TimeNow;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -71,7 +82,56 @@ void StartTask03(void const * argument);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+uint8_t BCD2DEC(uint8_t data){
+	return (data>>4)*10 + (data&0x0f);
+}
 
+uint8_t DEC2BCD(uint8_t data){
+	return (data/10)<<4|(data%10);
+}
+
+void setTime(int sec, int min, int hour, int day, int date, int month, int year){
+	  // Set time
+	  u8_tranBuffer[0] = DEC2BCD(sec);
+	  u8_tranBuffer[1] = DEC2BCD(min);
+	  u8_tranBuffer[2] = DEC2BCD(hour);
+
+	  // Set date
+	  u8_tranBuffer[3] = DEC2BCD(day);
+	  u8_tranBuffer[4] = DEC2BCD(date);
+	  u8_tranBuffer[5] = DEC2BCD(month);
+	  u8_tranBuffer[6] = DEC2BCD(year);
+
+	  HAL_I2C_Mem_Write_IT(&hi2c1, DS3231_ADDR, 0x00, I2C_MEMADD_SIZE_8BIT, u8_tranBuffer,7);
+}
+
+void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
+{
+  /* Prevent unused argument(s) compilation warning */
+  UNUSED(hi2c);
+
+  if(hi2c->Instance == I2C1){
+    // Lấy giá trị giây, phút, giờ, ngày, tháng, năm từ bộ đệm
+    DS3231_TimeNow.sec = BCD2DEC(u8_revBuffer[0] & 0x7F); // Giữ lại chỉ 7 bit thấp của giây
+    DS3231_TimeNow.min = BCD2DEC(u8_revBuffer[1]);
+    DS3231_TimeNow.hour = BCD2DEC(u8_revBuffer[2]);
+
+    DS3231_TimeNow.day = BCD2DEC(u8_revBuffer[3]);
+    DS3231_TimeNow.date = BCD2DEC(u8_revBuffer[4]);
+    DS3231_TimeNow.month = BCD2DEC(u8_revBuffer[5]);
+    DS3231_TimeNow.year = BCD2DEC(u8_revBuffer[6]);
+  }
+
+  /* NOTE : This function should not be modified, when the callback is needed,
+            the HAL_I2C_MemRxCpltCallback could be implemented in the user file
+   */
+}
+
+int __io_putchar(int ch)
+{
+    HAL_UART_Transmit(&huart1, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
+    return ch;
+}
 /* USER CODE END 0 */
 
 /**
@@ -106,7 +166,9 @@ int main(void)
   MX_I2C1_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-  DS3231_SetTime(59, 59, 23, 2, 10, 2, 25);
+
+//  setTime(00, 34, 22, 3, 12, 02, 25);
+
   /* USER CODE END 2 */
 
   /* USER CODE BEGIN RTOS_MUTEX */
@@ -132,21 +194,22 @@ int main(void)
 
   /* Create the thread(s) */
   /* definition and creation of Task2 */
-  osThreadDef(Task2, StartDefaultTask, osPriorityNormal, 0, 128);
+  osThreadDef(Task2, StartDefaultTask, osPriorityBelowNormal, 0, 128);
   Task2Handle = osThreadCreate(osThread(Task2), NULL);
 
   /* definition and creation of Task1 */
-  osThreadDef(Task1, StartTask02, osPriorityLow, 0, 128);
+  osThreadDef(Task1, StartTask02, osPriorityNormal, 0, 128);
   Task1Handle = osThreadCreate(osThread(Task1), NULL);
 
   /* definition and creation of Task3 */
-  osThreadDef(Task3, StartTask03, osPriorityIdle, 0, 128);
+  osThreadDef(Task3, StartTask03, osPriorityNormal, 0, 128);
   Task3Handle = osThreadCreate(osThread(Task3), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
-
+  HAL_I2C_Mem_Read_IT(&hi2c1, DS3231_ADDR, 0x00, I2C_MEMADD_SIZE_8BIT, u8_revBuffer, 7);
+  osMessagePut(myQueue01Handle, (uint32_t)&u8_revBuffer, 10);
   /* Start scheduler */
   osKernelStart();
 
@@ -296,8 +359,7 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-char uartBuf[128];
-uint8_t uartRxData;
+
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartDefaultTask */
@@ -313,9 +375,9 @@ void StartDefaultTask(void const * argument)
   /* Infinite loop */
   for(;;)
   {
-	DS3231_GetDateTime(&DS3231_Timer);
-	osMessagePut(myQueue01Handle, (uint32_t)&DS3231_Timer, 10);
-    osDelay(1000);
+	HAL_I2C_Mem_Read_IT(&hi2c1, DS3231_ADDR, 0x00, I2C_MEMADD_SIZE_8BIT, u8_revBuffer, 7);
+	osMessagePut(myQueue01Handle, (uint32_t)&u8_revBuffer, 10);
+	osDelay(50);
   }
   /* USER CODE END 5 */
 }
@@ -336,6 +398,7 @@ void StartTask02(void const * argument)
       if (HAL_UART_Receive(&huart1, &uartRxData, 1, HAL_MAX_DELAY) == HAL_OK) {
           osMessagePut(myQueue01Handle, uartRxData, osWaitForever);
       }
+      osDelay(50);
   }
   /* USER CODE END StartTask02 */
 }
@@ -349,39 +412,42 @@ void StartTask02(void const * argument)
 /* USER CODE END Header_StartTask03 */
 void StartTask03(void const * argument)
 {
-  /* USER CODE BEGIN StartTask03 */
   uint32_t lastReceivedTick = osKernelSysTick();
   osEvent event;
-  /* Infinite loop. Lặp vô hạn, tương tự while(1)*/
+  /* USER CODE BEGIN StartTask03 */
+  /* Infinite loop */
   for(;;)
   {
-	  event = osMessageGet(myQueue01Handle, 0);
-      if (event.status == osEventMessage) {
-          lastReceivedTick = osKernelSysTick();
-          uint8_t receivedChar = event.value.v;
+	event = osMessageGet(myQueue01Handle, 0);
+	if (event.status == osEventMessage) {
+		lastReceivedTick = osKernelSysTick();
+		uint8_t receivedChar = event.value.v;
 
-          if (receivedChar == 'D') { // Nếu ấn ký tự D (Date) từ bàn phím: Sẽ hiển thị Ngày:Tháng:Năm
-              snprintf(uartBuf, sizeof(uartBuf), "(Pressed D)=> Display only Date, Day: %02d/%02d/%04d (Day: %d)\r\n", // format DD:MM:YYYY
-            		  DS3231_Timer.date, DS3231_Timer.month, DS3231_Timer.year, DS3231_Timer.day);
-              HAL_UART_Transmit(&huart1, (uint8_t *)uartBuf, strlen(uartBuf), HAL_MAX_DELAY);
-          } else if (receivedChar == 'T') { // Nếu ấn ký tự T (Time) từ bàn phím: Sẽ hiển thị Giờ:Phút:Giây
-              snprintf(uartBuf, sizeof(uartBuf), "(Pressed T)=> Display only Time: %02d:%02d:%02d\r\n", // format hh:mm:ss
-            		  DS3231_Timer.hours, DS3231_Timer.minutes, DS3231_Timer.seconds);
-              HAL_UART_Transmit(&huart1, (uint8_t *)uartBuf, strlen(uartBuf), HAL_MAX_DELAY);
-          }
-      }
-      // Nhận dữ liệu từ Queue thời gian
-      event = osMessageGet(myQueue01Handle, 0);
-      if (event.status == osEventMessage) {
+		if (receivedChar == 'D') { // Nếu ấn ký tự D (Date) từ bàn phím: Sẽ hiển thị Ngày:Tháng:Năm
+			snprintf(uartBuf, sizeof(uartBuf), "(Pressed D)=> Display only Date, Day: %02d/%02d/%04d (Day: %d)\r\n", // format DD:MM:YYYY
+					DS3231_TimeNow.date, DS3231_TimeNow.month, DS3231_TimeNow.year, DS3231_TimeNow.day);
+			HAL_UART_Transmit(&huart1, (uint8_t *)uartBuf, strlen(uartBuf), HAL_MAX_DELAY);
+		} else if (receivedChar == 'T') { // Nếu ấn ký tự T (Time) từ bàn phím: Sẽ hiển thị Giờ:Phút:Giây
+			snprintf(uartBuf, sizeof(uartBuf), "(Pressed T)=> Display only Time: %02d:%02d:%02d\r\n", // format hh:mm:ss
+					DS3231_TimeNow.hour, DS3231_TimeNow.min, DS3231_TimeNow.sec);
+			HAL_UART_Transmit(&huart1, (uint8_t *)uartBuf, strlen(uartBuf), HAL_MAX_DELAY);
+		}
+	}
+
+	// Nhận dữ liệu từ Queue thời gian
+	event = osMessageGet(myQueue01Handle, 0);
+	if (event.status != osEventMessage) {
 // Nếu không ấn phím nào kể từ lần ấn gần nhất 2 giây, hiển thị toàn bộ thông tin Ngày:Tháng:Năm Giờ:Phút:Giây
-          if (osKernelSysTick() - lastReceivedTick > 2000) {
-              snprintf(uartBuf, sizeof(uartBuf), "(No key pressed)=> Auto display Full (Date, Time, Day): %02d/%02d/%04d %02d:%02d:%02d (Day: %d)\r\n",
-            		  DS3231_Timer.date, DS3231_Timer.month, DS3231_Timer.year,
-					  DS3231_Timer.hours, DS3231_Timer.minutes, DS3231_Timer.seconds,
-					  DS3231_Timer.day);
-              HAL_UART_Transmit(&huart1, (uint8_t *)uartBuf, strlen(uartBuf), HAL_MAX_DELAY);
-          }
-      }
+		if (osKernelSysTick() - lastReceivedTick > 2000) {
+			snprintf(uartBuf, sizeof(uartBuf), "(No key pressed)=> Auto display Full (Date, Time, Day): %02d/%02d/%04d %02d:%02d:%02d (Day: %d)\r\n",
+					DS3231_TimeNow.date, DS3231_TimeNow.month, DS3231_TimeNow.year,
+					DS3231_TimeNow.hour, DS3231_TimeNow.min, DS3231_TimeNow.sec, DS3231_TimeNow.day);
+			HAL_UART_Transmit(&huart1, (uint8_t *)uartBuf, strlen(uartBuf), HAL_MAX_DELAY);
+			lastReceivedTick = osKernelSysTick();
+		}
+	}
+
+	osDelay(50);
   }
   /* USER CODE END StartTask03 */
 }

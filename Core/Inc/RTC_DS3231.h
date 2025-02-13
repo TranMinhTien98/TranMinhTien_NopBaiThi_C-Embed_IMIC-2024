@@ -1,7 +1,3 @@
-/*
- * make library by ChucDao
- * congchuc289@gmail.com
- */
 #ifndef _DS3231_H_
 #define _DS3231_H_
 
@@ -35,7 +31,7 @@ typedef struct
    uint8_t year;      //Year,             00-99
 } DS3231_Typedef;
 
-extern DS3231_Typedef DS1307_Timer;
+extern DS3231_Typedef DS3231_Timer;
 
 uint8_t RTC_CheckMinMax(uint8_t val, uint8_t min, uint8_t max);
 
